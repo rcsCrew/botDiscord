@@ -1,5 +1,5 @@
 // /commands/play.js
-const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
+const { SlashCommandBuilder } = require("discord.js");
 const {
   joinVoiceChannel,
   createAudioResource,
@@ -17,6 +17,21 @@ if (ffmpeg && !process.env.FFMPEG_PATH) {
   console.log("🎛️ FFMPEG_PATH configurado via ffmpeg-static");
 }
 
+// === Config global de cookie/UA ===
+const YT_COOKIE = process.env.YT_COOKIE || "";
+const UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+if (YT_COOKIE) {
+  try {
+    playdl.setToken({ youtube: { cookie: YT_COOKIE } });
+    console.log("🍪 YT_COOKIE aplicado no play-dl");
+  } catch (e) {
+    console.warn("⚠️ Falha ao setar YT_COOKIE no play-dl:", e?.message);
+  }
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("play")
@@ -31,11 +46,6 @@ module.exports = {
     const query = interaction.options.getString("query");
     const voiceChannel = interaction.member?.voice?.channel;
     if (!voiceChannel) return interaction.editReply("❌ Você precisa estar em um canal de voz!");
-
-    if (process.env.YT_COOKIE) {
-      try { await playdl.setToken({ youtube: { cookie: process.env.YT_COOKIE } }); }
-      catch (e) { console.warn("⚠️ Falha ao setar YT_COOKIE:", e?.message); }
-    }
 
     const url = await resolveUrl(query);
     if (!url) return interaction.editReply("⚠️ Não encontrei resultado. Tente outro link ou termo.");
@@ -82,27 +92,27 @@ async function playSong(guildId, interaction) {
   const { url, title } = next;
 
   try {
-    // Tentativa 1: play-dl (via info)
+    // 1) play-dl via info
     try {
       const info = await playdl.video_info(url);
       const s1 = await playdl.stream_from_info(info, { quality: 2 });
-      const res1 = createAudioResource(s1.stream, { inputType: s1.type });
-      return startPlayback(q, res1, { url, title }, guildId, interaction);
+      console.log("▶️ Usando play-dl (via info)");
+      return startPlayback(q, createAudioResource(s1.stream, { inputType: s1.type }), { url, title }, guildId, interaction);
     } catch (e) {
-      console.warn("⚠️ play-dl (via info) falhou:", e?.message || e);
+      console.warn("⚠️ play-dl (via info) falhou:", e?.message);
     }
 
-    // Tentativa 2: play-dl direto
+    // 2) play-dl direto
     try {
       const s2 = await playdl.stream(url, { quality: 2 });
-      const res2 = createAudioResource(s2.stream, { inputType: s2.type });
-      return startPlayback(q, res2, { url, title }, guildId, interaction);
+      console.log("▶️ Usando play-dl (direto)");
+      return startPlayback(q, createAudioResource(s2.stream, { inputType: s2.type }), { url, title }, guildId, interaction);
     } catch (e) {
-      console.warn("⚠️ play-dl (direto) falhou:", e?.message || e);
+      console.warn("⚠️ play-dl (direto) falhou:", e?.message);
     }
 
-    // Tentativa 3: @distube/ytdl-core
-    if (!ytdl.validateURL(url)) throw new Error("URL inválida segundo @distube/ytdl-core");
+    // 3) ytdl-core com cookie + UA
+    if (!ytdl.validateURL(url)) throw new Error("URL inválida pro ytdl-core");
 
     const ytdlStream = ytdl(url, {
       filter: "audioonly",
@@ -111,17 +121,17 @@ async function playSong(guildId, interaction) {
       dlChunkSize: 0,
       requestOptions: {
         headers: {
-          "User-Agent": "Mozilla/5.0",
+          "User-Agent": UA,
           "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
           "Referer": "https://www.youtube.com",
-          "Cookie": process.env.YT_COOKIE || "",
+          "Cookie": YT_COOKIE,
         },
       },
     });
 
     const probe = await demuxProbe(ytdlStream);
-    const res3 = createAudioResource(probe.stream, { inputType: probe.type });
-    return startPlayback(q, res3, { url, title }, guildId, interaction);
+    console.log("▶️ Usando ytdl-core");
+    return startPlayback(q, createAudioResource(probe.stream, { inputType: probe.type }), { url, title }, guildId, interaction);
 
   } catch (err) {
     console.error("❌ Erro geral ao tocar:", err);
@@ -154,8 +164,7 @@ async function resolveUrl(query) {
 
     if (kind === "playlist") {
       const pl = await playdl.playlist_info(query, { incomplete: true });
-      const first = pl?.videos?.[0]?.url;
-      if (first) return first;
+      return pl?.videos?.[0]?.url || null;
     }
 
     const results = await playdl.search(query, { source: { youtube: "video" }, limit: 1 });
